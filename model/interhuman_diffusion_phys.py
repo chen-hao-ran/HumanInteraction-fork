@@ -477,6 +477,10 @@ class interhuman_diffusion_phys(interhuman_diffusion):
         cond, img_info = self.condition_process(data)
 
         init_pose = data['init_pose_6d']
+
+        # 将第二个人的初始pose改为gt
+        init_pose[:, :, 1] = data['pose_6d'][:, :, 1]
+
         noise, mean = self.generate_noise(init_pose)
 
         if self.training:
