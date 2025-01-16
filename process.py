@@ -90,10 +90,11 @@ def reconstruction_train(model, loss_func, train_loader, epoch, num_epoch, devic
         data = extract_valid(data)
 
         # forward
-        pred = model.model(data)
+        pose = data["pose"].view(-1, 2, 72)[:, 0]
+        pred = model.model(pose)
 
         # calculate loss
-        loss, cur_loss_dict = loss_func.calcul_trainloss(pred, data)
+        loss = 0.01 * ((pred - data["pose"].view(-1, 2, 72)[:, 1]) ** 2).sum()
 
         debug = False
         if debug:
@@ -137,7 +138,8 @@ def reconstruction_train(model, loss_func, train_loader, epoch, num_epoch, devic
             model.scheduler.batch_step()
 
         loss_batch = loss.detach() #/ batchsize
-        print('epoch: %d/%d, batch: %d/%d, loss: %.6f' %(epoch, num_epoch, i, len_data, loss_batch), cur_loss_dict)
+        # print('epoch: %d/%d, batch: %d/%d, loss: %.6f' %(epoch, num_epoch, i, len_data, loss_batch), cur_loss_dict)
+        print('epoch: %d/%d, batch: %d/%d, loss: %.6f' % (epoch, num_epoch, i, len_data, loss_batch), loss_batch)
         train_loss += loss_batch
 
     return train_loss/len_data
@@ -154,11 +156,31 @@ def reconstruction_test(model, loss_func, loader, epoch, device=torch.device('cp
             data = extract_valid(data)
 
             # forward
-            pred = model.model(data)
+            pose = data["pose"].view(-1, 2, 72)[:, 0]
+            pred = model.model(pose)
 
             # calculate loss
-            loss, cur_loss_dict = loss_func.calcul_testloss(pred, data)
-            
+            loss = 0.01 * ((pred - data["pose"].view(-1, 2, 72)[:, 1]) ** 2).sum()
+
+            # 可视化
+            if False:
+                pred = pred.view(-1, 1, 72).repeat(1, 2, 1)
+                pred[:, 0] = data["pose"].view(-1, 2, 72)[:, 0]
+                pred = pred.view(-1, 72)
+                shape = data["betas"]
+                trans = data["gt_cam_t"]
+                pred_verts, pred_joints = model.model.smpl(shape, pred, trans, halpe=True)
+                pred_verts = pred_verts.view(-1, 2, 6890, 3)
+                pred_verts = torch.cat((pred_verts[:, 0], pred_verts[:, 1]), dim=1)
+                pred_verts = pred_verts.detach().cpu().numpy().astype(np.float32)
+
+            import os
+            output_dir = "output"
+            os.makedirs(output_dir, exist_ok=True)
+            for i, verts in enumerate(pred_verts):
+                output_path = os.path.join(output_dir, f"{i:06d}.txt")
+                np.savetxt(output_path, verts)
+
             if False: #loss.max() > 100:
                 results = {}
                 results.update(imgs=data['imgname'])
@@ -174,7 +196,7 @@ def reconstruction_test(model, loss_func, loader, epoch, device=torch.device('cp
                 model.save_params(results, i, batchsize)
 
 
-            if i < 1: #loss.max() > 100:
+            if False: #loss.max() > 100:
                 results = {}
                 results.update(imgs=data['imgname'])
                 results.update(single_person=data['single_person'])
@@ -193,7 +215,7 @@ def reconstruction_test(model, loss_func, loader, epoch, device=torch.device('cp
                     model.save_results(results, i, batchsize)
 
             loss_batch = loss.mean().detach() #/ batchsize
-            print('batch: %d/%d, loss: %.6f ' %(i, len(loader), loss_batch), cur_loss_dict)
+            print('batch: %d/%d, loss: %.6f ' %(i, len(loader), loss_batch), loss_batch)
             loss_all += loss_batch
         loss_all = loss_all / len(loader)
         return loss_all

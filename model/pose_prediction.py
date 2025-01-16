@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 
-class PosePredictionMLP(nn.Module):
-    def __init__(self, input_dim=72, output_dim=72, hidden_dim=256, num_layers=3, dropout=0.2):
-        super(PosePredictionMLP, self).__init__()
+class pose_prediction(nn.Module):
+    def __init__(self, smpl, frame_length=16, input_dim=72, output_dim=72, hidden_dim=256, num_layers=3, dropout=0.2):
+        super(pose_prediction, self).__init__()
 
         layers = []
         # Input layer
@@ -20,7 +20,11 @@ class PosePredictionMLP(nn.Module):
         # Output layer
         layers.append(nn.Linear(hidden_dim, output_dim))
 
+        self.smpl = smpl
+
         self.model = nn.Sequential(*layers)
 
     def forward(self, x):
-        return self.model(x)
+        pred = self.model(x)
+
+        return pred

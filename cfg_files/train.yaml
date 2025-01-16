@@ -23,7 +23,7 @@ trainset: Hi4D
 testset: Hi4D
 
 # cliff hmr cliff_hmr pose_transformer_v8  relation relation_v8
-model: interhuman_diffusion_phys
+model: pose_prediction
 use_prior: False
 
 mode: train # train/test/eval
