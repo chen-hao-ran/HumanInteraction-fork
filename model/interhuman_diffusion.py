@@ -302,7 +302,11 @@ class interhuman_diffusion(nn.Module):
         pred_cam = self.cam_head(xc).view(-1, 3) + mean[:,-3:]
 
         pred_rotmat = rotation_6d_to_matrix(pred_pose6d.reshape(-1,6)).view(-1, 24, 3, 3)
-        pred_pose =  matrix_to_axis_angle(pred_rotmat.view(-1, 3, 3)).view(-1, 72)
+        pred_pose =  matrix_to_axis_angle(pred_rotmat.view(-1, 3, 3)).view(-1, 2, 72)
+
+        # 将第二个人的pose设置为gt
+        pred_pose[:, 1] = data["pose"].view(-1, 2, 72)[:, 1]
+        pred_pose = pred_pose.view(-1, 72)
 
         # convert the camera parameters from the crop camera to the full camera
         img_h, img_w = img_info['img_h'], img_info['img_w']
