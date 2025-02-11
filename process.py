@@ -7,6 +7,7 @@
 '''
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
 
@@ -91,10 +92,36 @@ def reconstruction_train(model, loss_func, train_loader, epoch, num_epoch, devic
 
         # forward
         pose = data["pose"].view(-1, 2, 72)[:, 0]
-        pred = model.model(pose)
+        pred = model.model(pose, data)
 
         # calculate loss
-        loss = 0.01 * ((pred - data["pose"].view(-1, 2, 72)[:, 1]) ** 2).sum()
+        loss = 0.01 * ((pred["pred_pose"] - data["pose"].view(-1, 2, 72)[:, 1]) ** 2).sum()
+
+        pred_joints = pred["pred_3dkp"]
+        gt_joints = data["gt_joints"].view(-1, 2, 26, 4)[:, 1]
+
+        halpe2lsp = [16, 14, 12, 11, 13, 15, 10, 8, 6, 5, 7, 9, 18, 17]
+        conf = gt_joints[:, halpe2lsp, -1]
+
+        pred_joints = pred_joints[:, halpe2lsp]
+        gt_joints = gt_joints[:, halpe2lsp, :3]
+
+        pred_joints = align_by_pelvis(pred_joints, format='lsp')
+        gt_joints = align_by_pelvis(gt_joints, format='lsp')
+
+        # gui.vis_skeleton(pred_joints.detach().cpu().numpy(), gt_joints.detach().cpu().numpy(), format='lsp')
+
+        diff = torch.sqrt(torch.sum((pred_joints - gt_joints) ** 2, dim=[2]) * conf)
+        diff = torch.mean(diff, dim=[1])
+        diff = torch.mean(diff) * 1000
+        print('[%d/%d] mpjpe: %.4f' % (i + 1, len_data, diff))
+
+        # pred_joints = batch_compute_similarity_transform(pred_joints, gt_joints)
+
+        # diff = torch.sqrt(torch.sum((pred_joints - gt_joints) ** 2, dim=[2]) * conf)
+        # diff = torch.mean(diff, dim=[1])
+        # diff = torch.mean(diff) * 1000
+        # print('[%d/%d] pa-mpjpe: %.4f' % (i + 1, len_data, diff))
 
         debug = False
         if debug:
@@ -157,10 +184,32 @@ def reconstruction_test(model, loss_func, loader, epoch, device=torch.device('cp
 
             # forward
             pose = data["pose"].view(-1, 2, 72)[:, 0]
-            pred = model.model(pose)
+            pred = model.model(pose, data)
 
             # calculate loss
-            loss = 0.01 * ((pred - data["pose"].view(-1, 2, 72)[:, 1]) ** 2).sum()
+            pred_joints = pred["pred_3dkp"]
+            gt_joints = data["gt_joints"].view(-1, 2, 26, 4)[:, 1]
+
+            halpe2lsp = [16, 14, 12, 11, 13, 15, 10, 8, 6, 5, 7, 9, 18, 17]
+            conf = gt_joints[:, halpe2lsp, -1]
+
+            pred_joints = pred_joints[:, halpe2lsp]
+            gt_joints = gt_joints[:, halpe2lsp, :3]
+
+            pred_joints = align_by_pelvis(pred_joints, format='lsp')
+            gt_joints = align_by_pelvis(gt_joints, format='lsp')
+
+            # gui.vis_skeleton(pred_joints.detach().cpu().numpy(), gt_joints.detach().cpu().numpy(), format='lsp')
+
+            diff = torch.sqrt(torch.sum((pred_joints - gt_joints) ** 2, dim=[2]) * conf)
+            diff = torch.mean(diff, dim=[1])
+            loss_mpjpe = torch.mean(diff) * 1000
+
+            pred_joints = batch_compute_similarity_transform(pred_joints, gt_joints)
+
+            diff = torch.sqrt(torch.sum((pred_joints - gt_joints) ** 2, dim=[2]) * conf)
+            diff = torch.mean(diff, dim=[1])
+            loss_pa_mpjpe = torch.mean(diff) * 1000
 
             # 可视化
             if False:
@@ -174,12 +223,12 @@ def reconstruction_test(model, loss_func, loader, epoch, device=torch.device('cp
                 pred_verts = torch.cat((pred_verts[:, 0], pred_verts[:, 1]), dim=1)
                 pred_verts = pred_verts.detach().cpu().numpy().astype(np.float32)
 
-            import os
-            output_dir = "output"
-            os.makedirs(output_dir, exist_ok=True)
-            for i, verts in enumerate(pred_verts):
-                output_path = os.path.join(output_dir, f"{i:06d}.txt")
-                np.savetxt(output_path, verts)
+                import os
+                output_dir = "output"
+                os.makedirs(output_dir, exist_ok=True)
+                for i, verts in enumerate(pred_verts):
+                    output_path = os.path.join(output_dir, f"{i:06d}.txt")
+                    np.savetxt(output_path, verts)
 
             if False: #loss.max() > 100:
                 results = {}
@@ -214,9 +263,10 @@ def reconstruction_test(model, loss_func, loader, epoch, device=torch.device('cp
                     results.update(gt_verts=data['verts'].detach().cpu().numpy().astype(np.float32))
                     model.save_results(results, i, batchsize)
 
-            loss_batch = loss.mean().detach() #/ batchsize
-            print('batch: %d/%d, loss: %.6f ' %(i, len(loader), loss_batch), loss_batch)
-            loss_all += loss_batch
+            loss_batch_mpjpe = loss_mpjpe.mean().detach() #/ batchsize
+            loss_batch_pa_mpjpe = loss_pa_mpjpe.mean().detach()
+            print('batch: %d/%d, mpjpe: %.6f pa-mpjpe: %.6f' %(i, len(loader), loss_batch_mpjpe, loss_batch_pa_mpjpe), loss_batch_mpjpe)
+            loss_all += loss_batch_mpjpe + loss_pa_mpjpe
         loss_all = loss_all / len(loader)
         return loss_all
 
@@ -244,52 +294,53 @@ def reconstruction_eval(model, loader, loss_func, device=torch.device('cpu')):
             data = extract_valid(data)
 
             # forward
-            pred = model.model(data)
+            pose = data["pose"].view(-1, 2, 72)[:, 0]
+            pred = model.model(pose, data)
 
-            pred_pose = pred['pred_pose'].reshape(batch_size, frame_length, agent_num, -1)
-            pred_shape = pred['pred_shape'].reshape(batch_size, frame_length, agent_num, -1)
-            pred_trans = pred['pred_cam_t'].reshape(batch_size, frame_length, agent_num, -1)
-
-            pred_pose = pred_pose.detach().cpu().numpy()
-            pred_shape = pred_shape.detach().cpu().numpy()
-            pred_trans = pred_trans.detach().cpu().numpy()
-
-            gt_pose = data['pose'].reshape(batch_size, frame_length, agent_num, -1)
-            gt_shape = data['betas'].reshape(batch_size, frame_length, agent_num, -1)
-            gt_trans = data['gt_cam_t'].reshape(batch_size, frame_length, agent_num, -1)
-            gt_gender = data['gender'].reshape(batch_size, frame_length, agent_num)
-            valid = data['valid'].reshape(batch_size, frame_length, agent_num)
-
-            gt_pose = gt_pose.detach().cpu().numpy()
-            gt_shape = gt_shape.detach().cpu().numpy()
-            gt_trans = gt_trans.detach().cpu().numpy()
-            gt_gender = gt_gender.detach().cpu().numpy()
-            valid = valid.detach().cpu().numpy()
-
-            for batch in range(batchsize):
-                s_id = str(int(seq_id[batch]))
-                for f in range(frame_length):
-
-                    if s_id not in output['pose'].keys():
-                        output['pose'][s_id] = [pred_pose[batch][f]]
-                        output['shape'][s_id] = [pred_shape[batch][f]]
-                        output['trans'][s_id] = [pred_trans[batch][f]]
-
-                        gt['pose'][s_id] = [gt_pose[batch][f]]
-                        gt['shape'][s_id] = [gt_shape[batch][f]]
-                        gt['trans'][s_id] = [gt_trans[batch][f]]
-                        gt['gender'][s_id] = [gt_gender[batch][f]]
-                        gt['valid'][s_id] = [valid[batch][f]]
-                    else:
-                        output['pose'][s_id].append(pred_pose[batch][f])
-                        output['shape'][s_id].append(pred_shape[batch][f])
-                        output['trans'][s_id].append(pred_trans[batch][f])
-
-                        gt['pose'][s_id].append(gt_pose[batch][f])
-                        gt['shape'][s_id].append(gt_shape[batch][f])
-                        gt['trans'][s_id].append(gt_trans[batch][f])
-                        gt['gender'][s_id].append(gt_gender[batch][f])
-                        gt['valid'][s_id].append(valid[batch][f])
+            # pred_pose = pred['pred_pose'].reshape(batch_size, frame_length, agent_num, -1)
+            # pred_shape = pred['pred_shape'].reshape(batch_size, frame_length, agent_num, -1)
+            # pred_trans = pred['pred_cam_t'].reshape(batch_size, frame_length, agent_num, -1)
+            #
+            # pred_pose = pred_pose.detach().cpu().numpy()
+            # pred_shape = pred_shape.detach().cpu().numpy()
+            # pred_trans = pred_trans.detach().cpu().numpy()
+            #
+            # gt_pose = data['pose'].reshape(batch_size, frame_length, agent_num, -1)
+            # gt_shape = data['betas'].reshape(batch_size, frame_length, agent_num, -1)
+            # gt_trans = data['gt_cam_t'].reshape(batch_size, frame_length, agent_num, -1)
+            # gt_gender = data['gender'].reshape(batch_size, frame_length, agent_num)
+            # valid = data['valid'].reshape(batch_size, frame_length, agent_num)
+            #
+            # gt_pose = gt_pose.detach().cpu().numpy()
+            # gt_shape = gt_shape.detach().cpu().numpy()
+            # gt_trans = gt_trans.detach().cpu().numpy()
+            # gt_gender = gt_gender.detach().cpu().numpy()
+            # valid = valid.detach().cpu().numpy()
+            #
+            # for batch in range(batchsize):
+            #     s_id = str(int(seq_id[batch]))
+            #     for f in range(frame_length):
+            #
+            #         if s_id not in output['pose'].keys():
+            #             output['pose'][s_id] = [pred_pose[batch][f]]
+            #             output['shape'][s_id] = [pred_shape[batch][f]]
+            #             output['trans'][s_id] = [pred_trans[batch][f]]
+            #
+            #             gt['pose'][s_id] = [gt_pose[batch][f]]
+            #             gt['shape'][s_id] = [gt_shape[batch][f]]
+            #             gt['trans'][s_id] = [gt_trans[batch][f]]
+            #             gt['gender'][s_id] = [gt_gender[batch][f]]
+            #             gt['valid'][s_id] = [valid[batch][f]]
+            #         else:
+            #             output['pose'][s_id].append(pred_pose[batch][f])
+            #             output['shape'][s_id].append(pred_shape[batch][f])
+            #             output['trans'][s_id].append(pred_trans[batch][f])
+            #
+            #             gt['pose'][s_id].append(gt_pose[batch][f])
+            #             gt['shape'][s_id].append(gt_shape[batch][f])
+            #             gt['trans'][s_id].append(gt_trans[batch][f])
+            #             gt['gender'][s_id].append(gt_gender[batch][f])
+            #             gt['valid'][s_id].append(valid[batch][f])
             
             if False: #loss.max() > 100:
                 results = {}
@@ -323,3 +374,80 @@ def reconstruction_eval(model, loader, loss_func, device=torch.device('cpu')):
                     model.save_results(results, i, batchsize)
 
         return output, gt
+
+def align_by_pelvis(joints, format='lsp'):
+    """
+    Assumes joints is 14 x 3 in LSP order.
+    Then hips are: [3, 2]
+    Takes mid point of these points, then subtracts it.
+    """
+    if format == 'lsp':
+        left_id = 3
+        right_id = 2
+
+        pelvis = (joints[:,left_id, :] + joints[:,right_id, :]) / 2.
+    elif format in ['smpl', 'h36m']:
+        pelvis_id = 0
+        pelvis = joints[pelvis_id, :]
+    elif format in ['mpi']:
+        pelvis_id = 14
+        pelvis = joints[pelvis_id, :]
+
+    return joints - pelvis[:,None,:].repeat(1, 14, 1)
+
+def batch_compute_similarity_transform(S1, S2):
+    '''
+    Computes a similarity transform (sR, t) that takes
+    a set of 3D points S1 (3 x N) closest to a set of 3D points S2,
+    where R is an 3x3 rotation matrix, t 3x1 translation, s scale.
+    i.e. solves the orthogonal Procrutes problem.
+    '''
+    transposed = False
+    if S1.shape[0] != 3 and S1.shape[0] != 2:
+        S1 = S1.permute(0,2,1)
+        S2 = S2.permute(0,2,1)
+        transposed = True
+    assert(S2.shape[1] == S1.shape[1])
+
+    # 1. Remove mean.
+    mu1 = S1.mean(axis=-1, keepdims=True)
+    mu2 = S2.mean(axis=-1, keepdims=True)
+
+    X1 = S1 - mu1
+    X2 = S2 - mu2
+
+    # 2. Compute variance of X1 used for scale.
+    var1 = torch.sum(X1**2, dim=1).sum(dim=1)
+
+    # 3. The outer product of X1 and X2.
+    K = X1.bmm(X2.permute(0,2,1))
+
+    # 4. Solution that Maximizes trace(R'K) is R=U*V', where U, V are
+    # singular vectors of K.
+    U, s, V = torch.svd(K)
+
+    # Construct Z that fixes the orientation of R to get det(R)=1.
+    Z = torch.eye(U.shape[1], device=S1.device).unsqueeze(0)
+    Z = Z.repeat(U.shape[0],1,1)
+    t1 = U.bmm(V.permute(0,2,1))
+    t2 = torch.det(t1)
+    Z[:,-1, -1] = Z[:,-1, -1] * torch.sign(t2)
+    # Z[:,-1, -1] *= torch.sign(torch.det(U.bmm(V.permute(0,2,1))))
+
+    # Construct R.
+    R = V.bmm(Z.bmm(U.permute(0,2,1)))
+
+    # 5. Recover scale.
+    scale = torch.cat([torch.trace(x).unsqueeze(0) for x in R.bmm(K)]) / var1
+
+    # 6. Recover translation.
+    t = mu2 - (scale.unsqueeze(-1).unsqueeze(-1) * (R.bmm(mu1)))
+
+    # 7. Error:
+    S1_hat = scale.unsqueeze(-1).unsqueeze(-1) * R.bmm(S1) + t
+
+    if transposed:
+        S1_hat = S1_hat.permute(0,2,1)
+
+    return S1_hat
+

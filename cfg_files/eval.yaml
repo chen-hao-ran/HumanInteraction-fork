@@ -15,12 +15,12 @@ model_type: smpl
 
 #********dataset*********#
 # The path for datasets and annotations
-data_folder: /home/chr/data/research/human3d/dataset
+data_folder: data/dataset
 
 trainset: Hi4D
 testset: Hi4D
 
-model: interhuman_diffusion_phys
+model: pose_prediction
 use_prior: False
 
 mode: test # train/test/eval
@@ -28,7 +28,7 @@ mode: test # train/test/eval
 
 # Use pretrain model and the corresponding path
 pretrain: True
-pretrain_dir: data/checkpoint_non_phys.pkl
+pretrain_dir: output/train/02.07-13h58m15s/trained model/best_reconstruction_epoch702_432.765381.pkl
 
 
 # The name of your training loss function
