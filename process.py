@@ -7,6 +7,7 @@
 '''
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
@@ -95,8 +96,29 @@ def reconstruction_train(model, loss_func, train_loader, epoch, num_epoch, devic
         pred = model.model(pose, data)
 
         # calculate loss
-        loss = 0.01 * ((pred["pred_pose"] - data["pose"].view(-1, 2, 72)[:, 1]) ** 2).sum()
+        pose_loss = torch.sum((pred["pred_pose"] - data["pose"].view(-1, 2, 72)[:, 1]) ** 2)
+        criterion = nn.BCELoss(reduction='none')
+        segmentation_loss = criterion(pred["pred_segmentation"], data["segmentation"].view(-1, 150))
+        segmentation_loss = torch.sum(torch.sum(segmentation_loss, dim=1)) / batchsize
+        signature_loss = criterion(pred["pred_signature"], data["signature"].view(-1, 5625))
+        signature_loss = torch.sum(torch.sum(signature_loss, dim=1)) / batchsize
 
+        loss = 0.01 * pose_loss + 0.01 * segmentation_loss + 0.01 * signature_loss
+
+        # iou
+        pred_segmentation_binary = torch.threshold(pred["pred_segmentation"], 0.75, 0).to(torch.int)
+        pred_signature_binary = torch.threshold(pred["pred_signature"], 0.75, 0).to(torch.int)
+        segmentation_intersection = torch.sum(pred_segmentation_binary & data["segmentation"].reshape(-1, 150).to(torch.int))
+        segmentation_union = torch.sum(pred_segmentation_binary | data["segmentation"].view(-1, 150).to(torch.int))
+        signature_intersection = torch.sum(pred_signature_binary & data["signature"].view(-1, 5625).to(torch.int))
+        signature_union = torch.sum(pred_signature_binary | data["signature"].reshape(-1, 5625).to(torch.int))
+        segmentation_iou = segmentation_intersection / segmentation_union
+        signature_iou = signature_intersection / signature_union
+        print(torch.max(pred["pred_segmentation"]))
+        print('[%d/%d] segmentation_iou: %.4f' % (i + 1, len_data, segmentation_iou))
+        print('[%d/%d] signature_iou: %.4f' % (i + 1, len_data, signature_iou))
+
+        # mpjpe
         pred_joints = pred["pred_3dkp"]
         gt_joints = data["gt_joints"].view(-1, 2, 26, 4)[:, 1]
 
@@ -116,42 +138,13 @@ def reconstruction_train(model, loss_func, train_loader, epoch, num_epoch, devic
         diff = torch.mean(diff) * 1000
         print('[%d/%d] mpjpe: %.4f' % (i + 1, len_data, diff))
 
+        # pa-mpjpe
         # pred_joints = batch_compute_similarity_transform(pred_joints, gt_joints)
 
         # diff = torch.sqrt(torch.sum((pred_joints - gt_joints) ** 2, dim=[2]) * conf)
         # diff = torch.mean(diff, dim=[1])
         # diff = torch.mean(diff) * 1000
         # print('[%d/%d] pa-mpjpe: %.4f' % (i + 1, len_data, diff))
-
-        debug = False
-        if debug:
-            results = {}
-            results.update(pred_trans=pred['pred_cam_t'].detach().cpu().numpy().astype(np.float32))
-            results.update(pred_pose=pred['pred_pose'].detach().cpu().numpy().astype(np.float32))
-            results.update(pred_shape=pred['pred_shape'].detach().cpu().numpy().astype(np.float32))
-            results.update(pred_verts=pred['pred_verts'].detach().cpu().numpy().astype(np.float32))
-            results.update(gt_trans=pred['pred_cam_t'].detach().cpu().numpy().astype(np.float32))
-            results.update(gt_pose=pred['pred_pose'].detach().cpu().numpy().astype(np.float32))
-            results.update(gt_shape=pred['pred_shape'].detach().cpu().numpy().astype(np.float32))
-            results.update(gt_verts=pred['pred_verts'].detach().cpu().numpy().astype(np.float32))
-            model.save_generated_interaction(results, i, batchsize)
-
-        debug = False
-        if debug:
-            results = {}
-            results.update(imgs=data['imgname'])
-            results.update(single_person=data['single_person'])
-            results.update(pred_trans=pred['pred_cam_t'].detach().cpu().numpy().astype(np.float32))
-            results.update(gt_trans=data['gt_cam_t'].detach().cpu().numpy().astype(np.float32))
-            results.update(focal_length=data['focal_length'].detach().cpu().numpy().astype(np.float32))
-            if 'pred_verts' not in pred.keys():
-                results.update(pred_joints=pred['pred_joints'].detach().cpu().numpy().astype(np.float32))
-                results.update(gt_joints=data['gt_joints'].detach().cpu().numpy().astype(np.float32))
-                model.save_joint_results(results, i, batchsize)
-            else:
-                results.update(pred_verts=pred['pred_verts'].detach().cpu().numpy().astype(np.float32))
-                results.update(gt_verts=data['verts'].detach().cpu().numpy().astype(np.float32))
-                model.save_results(results, i, batchsize)
 
         # backward
         model.optimizer.zero_grad()
