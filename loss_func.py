@@ -124,19 +124,10 @@ class Mesh_Loss(nn.Module):
         self.joint_weight = 5.0
         self.verts_weight = 5.0
 
-    def forward(self, pred_vertices, gt_vertices, has_smpl, valid):
+    def forward(self, pred_vertices, gt_vertices):
         loss_dict = {}
-        pred_vertices = pred_vertices[valid == 1]
-        gt_vertices = gt_vertices[valid == 1]
-        has_smpl = has_smpl[valid == 1]
 
-        pred_vertices_with_shape = pred_vertices[has_smpl == 1]
-        gt_vertices_with_shape = gt_vertices[has_smpl == 1]
-
-        if len(gt_vertices_with_shape) > 0:
-            vert_loss = self.criterion_vert(pred_vertices_with_shape, gt_vertices_with_shape)
-        else:
-            vert_loss = torch.FloatTensor(1).fill_(0.).to(self.device)[0]
+        vert_loss = self.criterion_vert(pred_vertices, gt_vertices)
 
         loss_dict['vert_loss'] = vert_loss * self.verts_weight
         return loss_dict
@@ -639,11 +630,8 @@ class MPJPE(nn.Module):
         self.device = device
         self.halpe2lsp = [16,14,12,11,13,15,10,8,6,5,7,9,18,17]
 
-    def forward_instance(self, pred_joints, gt_joints, valid):
+    def forward_instance(self, pred_joints, gt_joints):
         loss_dict = {}
-
-        pred_joints = pred_joints[valid == 1]
-        gt_joints = gt_joints[valid == 1]
 
         conf = gt_joints[:,self.halpe2lsp,-1]
 
@@ -656,14 +644,14 @@ class MPJPE(nn.Module):
         diff = torch.sqrt(torch.sum((pred_joints - gt_joints)**2, dim=[2]) * conf)
         diff = torch.mean(diff, dim=[1])
         diff = diff * 1000
-        
+
         return diff
 
-    def forward(self, pred_joints, gt_joints, valid):
+    def forward(self, pred_joints, gt_joints):
         loss_dict = {}
 
-        pred_joints = pred_joints[valid == 1]
-        gt_joints = gt_joints[valid == 1]
+        pred_joints = pred_joints
+        gt_joints = gt_joints
 
         conf = gt_joints[:,self.halpe2lsp,-1]
 
@@ -681,12 +669,8 @@ class MPJPE(nn.Module):
         
         return diff
 
-    def pa_mpjpe(self, pred_joints, gt_joints, valid):
+    def pa_mpjpe(self, pred_joints, gt_joints):
         loss_dict = {}
-
-        pred_joints = pred_joints[valid == 1]
-        gt_joints = gt_joints[valid == 1]
-
 
         conf = gt_joints[:,self.halpe2lsp,-1].detach().cpu()
 
@@ -986,3 +970,59 @@ class PCK(nn.Module):
 
         return joints - pelvis[:,None,:].repeat(1, 14, 1)
 
+class Seg_Sig_Loss(nn.Module):
+    def __init__(self, device):
+        super(Seg_Sig_Loss, self).__init__()
+        self.device = device
+        self.seg_loss_weight = 0.0001
+        self.sig_loss_weight = 0.0001
+
+    def forward(self, pred_seg, pred_sig, gt_seg, gt_sig):
+        loss_dict = {}
+        criterion = nn.BCELoss(reduction='none').to(self.device)
+        seg_loss = criterion(pred_seg, gt_seg)
+        seg_loss = torch.sum(torch.sum(seg_loss, dim=1))
+        sig_loss = criterion(pred_sig, gt_sig)
+        sig_loss = torch.sum(torch.sum(sig_loss, dim=1))
+
+        loss_dict['Seg_Loss'] = seg_loss * self.seg_loss_weight
+        loss_dict['Sig_Loss'] = sig_loss * self.sig_loss_weight
+        return loss_dict
+
+class Seg_Sig_Iou(nn.Module):
+    def __init__(self, device):
+        super(Seg_Sig_Iou, self).__init__()
+        self.device = device
+
+    def forward(self, pred_seg, pred_sig, gt_seg, gt_sig):
+        loss_dict = {}
+        pred_seg_binary = torch.where(pred_seg > 0.75, 1, 0).to(torch.int)
+        pred_sig_binary = torch.where(pred_sig > 0.75, 1, 0).to(torch.int)
+
+        seg_intersection = torch.sum(pred_seg_binary & gt_seg.to(torch.int))
+        seg_union = torch.sum(pred_seg_binary | gt_seg.to(torch.int))
+        sig_intersection = torch.sum(pred_sig_binary & gt_sig.to(torch.int))
+        sig_union = torch.sum(pred_sig_binary | gt_sig.to(torch.int))
+
+        seg_iou = seg_intersection / seg_union
+        sig_iou = sig_intersection / sig_union
+
+        loss_dict['Seg_Iou'] = seg_iou
+        loss_dict['Sig_Iou'] = sig_iou
+        return loss_dict
+
+class Pose_Loss(nn.Module):
+    def __init__(self, device):
+        super(Pose_Loss, self).__init__()
+        self.device = device
+        self.criterion_regr = nn.MSELoss().to(self.device)
+        self.pose_loss_weight = 1.0
+
+    def forward(self, pred_rotmat, gt_pose):
+        loss_dict = {}
+        gt_rotmat = batch_rodrigues(gt_pose.view(-1,3)).view(-1, 2, 24, 3, 3)[:, 1]
+
+        loss_regr_pose = self.criterion_regr(pred_rotmat, gt_rotmat)
+
+        loss_dict['Pose_Loss'] = loss_regr_pose * self.pose_loss_weight
+        return loss_dict

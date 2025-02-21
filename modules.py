@@ -102,7 +102,11 @@ class LossLoader():
                 self.train_loss.update(KL_Loss=KL_Loss(self.device))
             if loss == 'MPJPE_instance':
                 self.train_loss.update(MPJPE_instance=MPJPE(self.device))
-            # You can define your loss function in loss_func.py, e.g., Smooth6D, 
+            if loss == 'Seg_Sig_Loss':
+                self.train_loss.update(Seg_Sig_Loss=Seg_Sig_Loss(self.device))
+            if loss == 'Pose_Loss':
+                self.train_loss.update(Pose_Loss=Pose_Loss(self.device))
+            # You can define your loss function in loss_func.py, e.g., Smooth6D,
             # and load the loss by adding the following lines
 
             # if loss == 'Smooth6D':
@@ -136,6 +140,8 @@ class LossLoader():
                 self.test_loss.update(Int_Loss=Int_Loss(self.device))
             if loss == 'Interaction':
                 self.test_loss.update(Interaction=Interaction(self.device))
+            if loss == 'Seg_Sig_Iou':
+                self.test_loss.update(Seg_Sig_Iou=Seg_Sig_Iou(self.device))
 
     def calcul_trainloss(self, pred, gt):
         loss_dict = {}
@@ -154,7 +160,7 @@ class LossLoader():
                 Keyp_loss = self.train_loss['Keyp_Loss'](pred['pred_keypoints_2d'], gt['keypoints'], gt['valid'])
                 loss_dict = {**loss_dict, **Keyp_loss}
             elif ltype == 'Mesh_Loss':
-                Mesh_loss = self.train_loss['Mesh_Loss'](pred['pred_verts'], gt['verts'], gt['has_smpl'], gt['valid'])
+                Mesh_loss = self.train_loss['Mesh_Loss'](pred['pred_verts'], gt['verts'].view(-1, 2, 6890, 3)[:, 1])
                 loss_dict = {**loss_dict, **Mesh_loss}
             elif ltype == 'Vel_Loss':
                 Vel_Loss = self.train_loss['Vel_Loss'](pred['pred_joints'], gt['gt_joints'], gt['data_shape'], gt['has_3d'], gt['valid'])
@@ -175,8 +181,12 @@ class LossLoader():
                 KL_Loss_a = self.train_loss['KL_Loss'](pred['q_a'])
                 KL_Loss_b = self.train_loss['KL_Loss'](pred['q_b'])
                 loss_dict = {**loss_dict, **KL_Loss_a, **KL_Loss_b}
-            # Calculate your loss here
-
+            elif ltype == 'Seg_Sig_Loss':
+                Seg_Sig_Loss = self.train_loss['Seg_Sig_Loss'](pred['pred_segmentation'], pred['pred_signature'], gt['segmentation'].view(-1, 68), gt["signature"].view(-1, 34 * 34))
+                loss_dict = {**loss_dict, **Seg_Sig_Loss}
+            elif ltype == 'Pose_Loss':
+                Pose_Loss = self.train_loss['Pose_Loss'](pred['pred_rotmat'], gt['pose'])
+                loss_dict = {**loss_dict, **Pose_Loss}
             # elif ltype == 'Smooth6D':
             #     loss_dict.update(Smooth6D=self.train_loss['Smooth6D'](pred_pose))
             else:
@@ -197,20 +207,20 @@ class LossLoader():
             if ltype == 'L1':
                 loss_dict.update(L1=self.test_loss['L1'](pred['pred_x'], gt['x']))
             elif ltype == 'MPJPE':
-                loss_dict.update(MPJPE=self.test_loss['MPJPE'](pred['pred_joints'], gt['gt_joints'], gt['valid']))
+                loss_dict.update(MPJPE=self.test_loss['MPJPE'](pred['pred_joints'], gt['gt_joints'].view(-1, 2, 26, 4)[:, 1]))
             elif ltype == 'MPJPE_instance':
-                loss_dict.update(MPJPE_instance=self.test_loss['MPJPE_instance'].forward_instance(pred['pred_joints'], gt['gt_joints'], gt['valid']))
+                loss_dict.update(MPJPE_instance=self.test_loss['MPJPE_instance'].forward_instance(pred['pred_joints'], gt['gt_joints'].view(-1, 2, 26, 4)[:, 1]))
             elif ltype == 'MPJPE_H36M':
                 loss_dict.update(MPJPE_H36M=self.test_loss['MPJPE_H36M'](pred['pred_verts'], gt['gt_joints'], gt['valid']))
             elif ltype == 'PA_MPJPE':
-                loss_dict.update(PA_MPJPE=self.test_loss['PA_MPJPE'].pa_mpjpe(pred['pred_joints'], gt['gt_joints'], gt['valid']))
+                loss_dict.update(PA_MPJPE=self.test_loss['PA_MPJPE'].pa_mpjpe(pred['pred_joints'], gt['gt_joints'].view(-1, 2, 26, 4)[:, 1]))
             elif ltype == 'PCK':
                 loss_dict.update(PCK=self.test_loss['PCK'](pred['pred_joints'], gt['gt_joints'], gt['valid']))
             elif ltype == 'Keyp_Loss':
                 Keyp_loss = self.test_loss['Keyp_Loss'](pred['pred_keypoints_2d'], gt['keypoints'], gt['valid'])
                 loss_dict = {**loss_dict, **Keyp_loss}
             elif ltype == 'Mesh_Loss':
-                Mesh_loss = self.test_loss['Mesh_Loss'](pred['pred_verts'], gt['verts'], gt['has_smpl'], gt['valid'])
+                Mesh_loss = self.test_loss['Mesh_Loss'](pred['pred_verts'], gt['verts'].view(-1, 2, 6890, 3)[:, 1])
                 loss_dict = {**loss_dict, **Mesh_loss}
             elif ltype == 'Joint_Loss':
                 Joint_Loss = self.test_loss['Joint_Loss'](pred['pred_joints'], gt['gt_joints'], gt['has_3d'], gt['valid'])
@@ -224,6 +234,9 @@ class LossLoader():
             elif ltype == 'Interaction':
                 Interaction = self.test_loss['Interaction'](pred['pred_joints'], pred['pred_cam_t'], gt['gt_joints'], gt['gt_cam_t'], gt['has_3d'], gt['valid'])
                 loss_dict = {**loss_dict, **Interaction}
+            elif ltype == 'Seg_Sig_Iou':
+                Seg_Sig_Iou = self.test_loss['Seg_Sig_Iou'](pred['pred_segmentation'], pred['pred_signature'], gt['segmentation'].view(-1, 68), gt["signature"].view(-1, 34 * 34))
+                loss_dict = {**loss_dict, **Seg_Sig_Iou}
             else:
                 print('The specified loss: %s does not exist' %ltype)
                 pass

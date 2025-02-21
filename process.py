@@ -98,59 +98,8 @@ def reconstruction_train(model, loss_func, train_loader, epoch, num_epoch, devic
         pose = data["pose"].view(-1, 2, 72)[:, 0]
         pred = model.model(pose, data)
 
-        # calculate loss
-        pose_loss = torch.sum(torch.sqrt((pred["pred_pose"] - data["pose"].view(-1, 2, 72)[:, 1]) ** 2))
-        # vertices_loss = torch.sum(torch.sqrt((pred["pred_vertices"] - data["verts"].view(-1, 2, 6890, 3)[:, 1]) ** 2 + 1e-6))
-        criterion = nn.BCELoss(reduction='none')
-        segmentation_loss = criterion(pred["pred_segmentation"], data["segmentation"].view(-1, 68))
-        segmentation_loss = torch.sum(torch.sum(segmentation_loss, dim=1)) / batchsize
-        signature_loss = criterion(pred["pred_signature"], data["signature"].view(-1, 34 * 34))
-        signature_loss = torch.sum(torch.sum(signature_loss, dim=1)) / batchsize
-
-        loss = 0.001 * pose_loss + 0.001 * segmentation_loss + 0.001 * signature_loss
-
-        # iou
-        pred_segmentation_binary = torch.where(pred["pred_segmentation"] > 0.75, 1, 0).to(torch.int)
-        pred_signature_binary = torch.where(pred["pred_signature"] > 0.75, 1, 0).to(torch.int)
-
-        segmentation_intersection = torch.sum(pred_segmentation_binary & data["segmentation"].reshape(-1, 68).to(torch.int))
-        segmentation_union = torch.sum(pred_segmentation_binary | data["segmentation"].view(-1, 68).to(torch.int))
-        signature_intersection = torch.sum(pred_signature_binary & data["signature"].view(-1, 34 * 34).to(torch.int))
-        signature_union = torch.sum(pred_signature_binary | data["signature"].reshape(-1, 34 * 34).to(torch.int))
-
-        segmentation_iou = segmentation_intersection / segmentation_union
-        signature_iou = signature_intersection / signature_union
-        print(torch.max(pred_segmentation_binary))
-        print('[%d/%d] segmentation_iou: %.4f' % (i + 1, len_data, segmentation_iou))
-        print('[%d/%d] signature_iou: %.4f' % (i + 1, len_data, signature_iou))
-
-        # mpjpe
-        pred_joints = pred["pred_3dkp"]
-        gt_joints = data["gt_joints"].view(-1, 2, 26, 4)[:, 1]
-
-        halpe2lsp = [16, 14, 12, 11, 13, 15, 10, 8, 6, 5, 7, 9, 18, 17]
-        conf = gt_joints[:, halpe2lsp, -1]
-
-        pred_joints = pred_joints[:, halpe2lsp]
-        gt_joints = gt_joints[:, halpe2lsp, :3]
-
-        pred_joints = align_by_pelvis(pred_joints, format='lsp')
-        gt_joints = align_by_pelvis(gt_joints, format='lsp')
-
-        # gui.vis_skeleton(pred_joints.detach().cpu().numpy(), gt_joints.detach().cpu().numpy(), format='lsp')
-
-        diff = torch.sqrt(torch.sum((pred_joints - gt_joints) ** 2, dim=[2]) * conf)
-        diff = torch.mean(diff, dim=[1])
-        diff = torch.mean(diff) * 1000
-        print('[%d/%d] mpjpe: %.4f' % (i + 1, len_data, diff))
-
-        # pa-mpjpe
-        # pred_joints = batch_compute_similarity_transform(pred_joints, gt_joints)
-
-        # diff = torch.sqrt(torch.sum((pred_joints - gt_joints) ** 2, dim=[2]) * conf)
-        # diff = torch.mean(diff, dim=[1])
-        # diff = torch.mean(diff) * 1000
-        # print('[%d/%d] pa-mpjpe: %.4f' % (i + 1, len_data, diff))
+        # loss
+        loss, cur_loss_dict = loss_func.calcul_trainloss(pred, data)
 
         # backward
         model.optimizer.zero_grad()
@@ -164,8 +113,7 @@ def reconstruction_train(model, loss_func, train_loader, epoch, num_epoch, devic
             model.scheduler.batch_step()
 
         loss_batch = loss.detach() #/ batchsize
-        # print('epoch: %d/%d, batch: %d/%d, loss: %.6f' %(epoch, num_epoch, i, len_data, loss_batch), cur_loss_dict)
-        print('epoch: %d/%d, batch: %d/%d, loss: %.6f' % (epoch, num_epoch, i, len_data, loss_batch), loss_batch)
+        print('epoch: %d/%d, batch: %d/%d, loss: %.6f' %(epoch, num_epoch, i, len_data, loss_batch), cur_loss_dict)
         train_loss += loss_batch
 
         if False:
@@ -209,44 +157,7 @@ def reconstruction_test(model, loss_func, loader, epoch, device=torch.device('cp
             pred = model.model(pose, data)
 
             # calculate loss
-            pred_joints = pred["pred_3dkp"]
-            gt_joints = data["gt_joints"].view(-1, 2, 26, 4)[:, 1]
-
-            halpe2lsp = [16, 14, 12, 11, 13, 15, 10, 8, 6, 5, 7, 9, 18, 17]
-            conf = gt_joints[:, halpe2lsp, -1]
-
-            pred_joints = pred_joints[:, halpe2lsp]
-            gt_joints = gt_joints[:, halpe2lsp, :3]
-
-            pred_joints = align_by_pelvis(pred_joints, format='lsp')
-            gt_joints = align_by_pelvis(gt_joints, format='lsp')
-
-            # gui.vis_skeleton(pred_joints.detach().cpu().numpy(), gt_joints.detach().cpu().numpy(), format='lsp')
-
-            diff = torch.sqrt(torch.sum((pred_joints - gt_joints) ** 2, dim=[2]) * conf)
-            diff = torch.mean(diff, dim=[1])
-            loss_mpjpe = torch.mean(diff) * 1000
-
-            pred_joints = batch_compute_similarity_transform(pred_joints, gt_joints)
-
-            diff = torch.sqrt(torch.sum((pred_joints - gt_joints) ** 2, dim=[2]) * conf)
-            diff = torch.mean(diff, dim=[1])
-            loss_pa_mpjpe = torch.mean(diff) * 1000
-
-            # iou
-            pred_segmentation_binary = torch.where(pred["pred_segmentation"] > 0.75, 1, 0).to(torch.int)
-            pred_signature_binary = torch.where(pred["pred_signature"] > 0.75, 1, 0).to(torch.int)
-
-            segmentation_intersection = torch.sum(pred_segmentation_binary & data["segmentation"].reshape(-1, 68).to(torch.int))
-            segmentation_union = torch.sum(pred_segmentation_binary | data["segmentation"].view(-1, 68).to(torch.int))
-            signature_intersection = torch.sum(pred_signature_binary & data["signature"].view(-1, 34 * 34).to(torch.int))
-            signature_union = torch.sum(pred_signature_binary | data["signature"].reshape(-1, 34 * 34).to(torch.int))
-
-            segmentation_iou = segmentation_intersection / segmentation_union
-            signature_iou = signature_intersection / signature_union
-            print(torch.max(pred_segmentation_binary))
-            print('[%d] segmentation_iou: %.4f' % (i + 1, segmentation_iou))
-            print('[%d] signature_iou: %.4f' % (i + 1, signature_iou))
+            loss, cur_loss_dict = loss_func.calcul_testloss(pred, data)
 
             # 可视化
             if False:
@@ -300,10 +211,9 @@ def reconstruction_test(model, loss_func, loader, epoch, device=torch.device('cp
                     results.update(gt_verts=data['verts'].detach().cpu().numpy().astype(np.float32))
                     model.save_results(results, i, batchsize)
 
-            loss_batch_mpjpe = loss_mpjpe.mean().detach() #/ batchsize
-            loss_batch_pa_mpjpe = loss_pa_mpjpe.mean().detach()
-            print('batch: %d/%d, mpjpe: %.6f pa-mpjpe: %.6f' %(i, len(loader), loss_batch_mpjpe, loss_batch_pa_mpjpe), loss_batch_mpjpe)
-            loss_all += loss_batch_mpjpe + loss_pa_mpjpe
+            loss_batch = loss.mean().detach()  # / batchsize
+            print('batch: %d/%d, loss: %.6f ' % (i, len(loader), loss_batch), cur_loss_dict)
+            loss_all += loss_batch
         loss_all = loss_all / len(loader)
         return loss_all
 

@@ -61,17 +61,12 @@ class pose_prediction(nn.Module):
         two_human_pose = torch.cat((x, pred_pose), dim=1)
         pred_segmentation = torch.sigmoid(self.segmentation_head(two_human_pose))
         pred_signature = torch.sigmoid(self.signature_head(two_human_pose))
-        print(torch.max(pred_segmentation))
-        print(torch.max(pred_signature))
-        print(torch.min(pred_segmentation))
-        print(torch.min(pred_signature))
-        # 确保分割输出在 0~1 之间
-        assert torch.all(pred_segmentation >= 0) and torch.all(pred_segmentation <= 1), "Segmentation output should be in [0,1] range"
+        # print(torch.max(pred_segmentation))
+        # print(torch.max(pred_signature))
+        # print(torch.min(pred_segmentation))
+        # print(torch.min(pred_signature))
 
-        # 确保签名输出在 0~1 之间
-        assert torch.all(pred_signature >= 0) and torch.all(pred_signature <= 1), "Signature output should be in [0,1] range"
-
-        pred_vertices, pred_3dkp = self.smpl(
+        pred_verts, pred_joints = self.smpl(
             gt["betas"].view(-1, 2, 10)[:, 1],
             pred_pose,
             gt["gt_cam_t"].view(-1, 2, )[:, 1],
@@ -81,10 +76,11 @@ class pose_prediction(nn.Module):
         pred = {
             "pred_pose6d": pred_pose6d,
             "pred_pose": pred_pose,
+            "pred_rotmat": pred_rotmat,
             # "pred_shape": pred_shape,
             # "pred_transl": pred_transl,
-            "pred_vertices": pred_vertices,
-            "pred_3dkp": pred_3dkp,
+            "pred_verts": pred_verts,
+            "pred_joints": pred_joints,
             "pred_segmentation": pred_segmentation,
             "pred_signature": pred_signature,
         }
