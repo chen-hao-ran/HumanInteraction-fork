@@ -9,10 +9,6 @@ from renderer_pyrd_bkup import Renderer
 from utils.geometry import batch_rodrigues
 from utils.rotation_conversions import matrix_to_axis_angle, rotation_6d_to_matrix
 
-import torch
-import torch.nn as nn
-
-
 class pose_prediction(nn.Module):
     def __init__(self,
                  smpl,
@@ -22,32 +18,37 @@ class pose_prediction(nn.Module):
                  output_pose_dim=144,
                  output_shape_dim=10,
                  output_transl_dim=3,
-                 hidden_dim=256,
-                 num_layers=3,
                  dropout=0.2):
         super(pose_prediction, self).__init__()
 
-        layers = []
-        # Input layer
-        layers.append(nn.Linear(input_pose_dim, hidden_dim))
-        layers.append(nn.ReLU())
-        layers.append(nn.Dropout(dropout))
+        self.shared_layers  = nn.Sequential(
+            nn.Linear(input_pose_dim,  256),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(256,  512),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
 
-        # Hidden layers
-        for _ in range(num_layers - 1):
-            layers.append(nn.Linear(hidden_dim, hidden_dim))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout))
+        self.pose_head  = nn.Linear(512, output_pose_dim)
+        # self.shape_head  = nn.Linear(512, output_shape_dim)
+        # self.transl_head  = nn.Linear(512, output_transl_dim)
 
-        self.shared_layers = nn.Sequential(*layers)
+        self.segmentation_head = nn.Sequential(
+            nn.Linear(input_contact_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(512, 2 * 34)
+        )
 
-        self.pose_head = nn.Linear(hidden_dim, output_pose_dim)
-        # self.shape_head = nn.Linear(hidden_dim, output_shape_dim)
-        # self.transl_head = nn.Linear(hidden_dim, output_transl_dim)
-        self.signature_head = nn.Linear(input_contact_dim, 75 * 75)
-        self.segmentation_head = nn.Linear(input_contact_dim, 2 * 75)
+        self.signature_head = nn.Sequential(
+            nn.Linear(input_contact_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(512, 34 * 34)
+        )
 
-        self.smpl = smpl
+        self.smpl  = smpl
 
     def forward(self, x, gt):
         features = self.shared_layers(x)
@@ -60,7 +61,15 @@ class pose_prediction(nn.Module):
         two_human_pose = torch.cat((x, pred_pose), dim=1)
         pred_segmentation = torch.sigmoid(self.segmentation_head(two_human_pose))
         pred_signature = torch.sigmoid(self.signature_head(two_human_pose))
+        print(torch.max(pred_segmentation))
+        print(torch.max(pred_signature))
+        print(torch.min(pred_segmentation))
+        print(torch.min(pred_signature))
+        # 确保分割输出在 0~1 之间
+        assert torch.all(pred_segmentation >= 0) and torch.all(pred_segmentation <= 1), "Segmentation output should be in [0,1] range"
 
+        # 确保签名输出在 0~1 之间
+        assert torch.all(pred_signature >= 0) and torch.all(pred_signature <= 1), "Signature output should be in [0,1] range"
 
         pred_vertices, pred_3dkp = self.smpl(
             gt["betas"].view(-1, 2, 10)[:, 1],

@@ -50,7 +50,7 @@ class Reconstruction_Feature_Data(base):
         self.init_poses = annots['init_poses']
         self.poses = annots['poses']
         self.shapes = annots['shapes']
-        # self.contacts = annots['contacts']
+        self.contacts = annots['contacts']
         self.segmentation = annots['segmentation']
         self.signature = annots['signature']
 
@@ -177,6 +177,7 @@ class Reconstruction_Feature_Data(base):
         genders           = np.array(self.genders[seq_ind], dtype=self.np_type)[0]
         segmentation      = np.array(self.segmentation[seq_ind], dtype=self.np_type)[ind]
         signature         = np.array(self.signature[seq_ind], dtype=self.np_type)[ind]
+        contacts          = np.array(self.contacts[seq_ind], dtype=self.np_type)[ind]
         if len(self.valid) > 0:
             valid         = np.array(self.valid[seq_ind], dtype=self.np_type)[ind].reshape(self.frame_length, num_people)
         else:
@@ -276,6 +277,7 @@ class Reconstruction_Feature_Data(base):
 
         load_data["segmentation"] = segmentation
         load_data["signature"] = signature
+        load_data["contacts"] = contacts
 
         # self.vis_input(origin_img, load_data['pred_keypoints'], load_data['keypoints'], load_data['pose'], load_data['betas'], load_data['gt_cam_t'], load_data['valid'], load_data["new_shape"].detach().numpy(), load_data["new_x"].detach().numpy(), load_data["new_y"].detach().numpy(), load_data["old_x"].detach().numpy(), load_data["old_y"].detach().numpy(), focal_length, img_h, img_w)
 

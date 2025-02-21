@@ -14,7 +14,9 @@ from cmd_parser import parse_config
 from utils.module_utils import seed_worker, set_seed
 from modules import init, LossLoader, ModelLoader, DatasetLoader
 
+# Linux Platform
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256'
+
 
 ###########Load config file in debug mode#########
 # import sys

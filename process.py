@@ -10,7 +10,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import os
+import cv2
 from tqdm import tqdm
+from renderer_pyrd_bkup import Renderer
 
 def merge_gt(data):
     batch_size, frame_length, agent_num = data['pose'].shape[:3]
@@ -96,25 +99,28 @@ def reconstruction_train(model, loss_func, train_loader, epoch, num_epoch, devic
         pred = model.model(pose, data)
 
         # calculate loss
-        pose_loss = torch.sum((pred["pred_pose"] - data["pose"].view(-1, 2, 72)[:, 1]) ** 2)
+        pose_loss = torch.sum(torch.sqrt((pred["pred_pose"] - data["pose"].view(-1, 2, 72)[:, 1]) ** 2))
+        # vertices_loss = torch.sum(torch.sqrt((pred["pred_vertices"] - data["verts"].view(-1, 2, 6890, 3)[:, 1]) ** 2 + 1e-6))
         criterion = nn.BCELoss(reduction='none')
-        segmentation_loss = criterion(pred["pred_segmentation"], data["segmentation"].view(-1, 150))
+        segmentation_loss = criterion(pred["pred_segmentation"], data["segmentation"].view(-1, 68))
         segmentation_loss = torch.sum(torch.sum(segmentation_loss, dim=1)) / batchsize
-        signature_loss = criterion(pred["pred_signature"], data["signature"].view(-1, 5625))
+        signature_loss = criterion(pred["pred_signature"], data["signature"].view(-1, 34 * 34))
         signature_loss = torch.sum(torch.sum(signature_loss, dim=1)) / batchsize
 
-        loss = 0.01 * pose_loss + 0.01 * segmentation_loss + 0.01 * signature_loss
+        loss = 0.001 * pose_loss + 0.001 * segmentation_loss + 0.001 * signature_loss
 
         # iou
-        pred_segmentation_binary = torch.threshold(pred["pred_segmentation"], 0.75, 0).to(torch.int)
-        pred_signature_binary = torch.threshold(pred["pred_signature"], 0.75, 0).to(torch.int)
-        segmentation_intersection = torch.sum(pred_segmentation_binary & data["segmentation"].reshape(-1, 150).to(torch.int))
-        segmentation_union = torch.sum(pred_segmentation_binary | data["segmentation"].view(-1, 150).to(torch.int))
-        signature_intersection = torch.sum(pred_signature_binary & data["signature"].view(-1, 5625).to(torch.int))
-        signature_union = torch.sum(pred_signature_binary | data["signature"].reshape(-1, 5625).to(torch.int))
+        pred_segmentation_binary = torch.where(pred["pred_segmentation"] > 0.75, 1, 0).to(torch.int)
+        pred_signature_binary = torch.where(pred["pred_signature"] > 0.75, 1, 0).to(torch.int)
+
+        segmentation_intersection = torch.sum(pred_segmentation_binary & data["segmentation"].reshape(-1, 68).to(torch.int))
+        segmentation_union = torch.sum(pred_segmentation_binary | data["segmentation"].view(-1, 68).to(torch.int))
+        signature_intersection = torch.sum(pred_signature_binary & data["signature"].view(-1, 34 * 34).to(torch.int))
+        signature_union = torch.sum(pred_signature_binary | data["signature"].reshape(-1, 34 * 34).to(torch.int))
+
         segmentation_iou = segmentation_intersection / segmentation_union
         signature_iou = signature_intersection / signature_union
-        print(torch.max(pred["pred_segmentation"]))
+        print(torch.max(pred_segmentation_binary))
         print('[%d/%d] segmentation_iou: %.4f' % (i + 1, len_data, segmentation_iou))
         print('[%d/%d] signature_iou: %.4f' % (i + 1, len_data, signature_iou))
 
@@ -162,6 +168,29 @@ def reconstruction_train(model, loss_func, train_loader, epoch, num_epoch, devic
         print('epoch: %d/%d, batch: %d/%d, loss: %.6f' % (epoch, num_epoch, i, len_data, loss_batch), loss_batch)
         train_loss += loss_batch
 
+        if False:
+            output_dir = f"output/contact_estimation/{i}"
+            os.makedirs(output_dir, exist_ok=True)
+            for idx in range(batchsize):
+                img_origin = cv2.imread(data["imgname"][idx])
+                img = img_origin.copy()
+                renderer = Renderer(focal_length=data["focal_length"][2 * idx], img_w=img.shape[1], img_h=img.shape[0],
+                                    faces=model.model.smpl.faces,
+                                    same_mesh_color=True)
+
+                first_verts = data["verts"].view(-1, 2, 6890, 3)[idx:idx+1, 0] + data["gt_cam_t"].view(-1, 2, 3)[idx:idx+1, 0].view(1, 1, 3)
+                # second_verts = pred["pred_vertices"][idx:idx + 1]
+                second_verts = data["verts"].view(-1, 2, 6890, 3)[idx:idx + 1, 1] + data["gt_cam_t"].view(-1, 2, 3)[
+                                                                                   idx:idx + 1, 1].view(1, 1, 3)
+                verts = torch.cat([first_verts, second_verts], dim=0).detach().cpu().numpy()
+                contact_label = data["segmentation"].view(-1, 2, 34)[idx].detach().cpu().numpy()
+                # contact_label = data["contacts"].view(-1, 2, 6890)[idx].detach().cpu().numpy()
+
+                front_view = renderer.render_front_view(verts, contact_label, bg_img_rgb=img.copy())
+                side_view = renderer.render_side_view(verts, contact_label)
+                cv2.imwrite(os.path.join(output_dir, f"front_view_{idx:06d}.png"), front_view)
+                cv2.imwrite(os.path.join(output_dir, f"side_view_{idx:06d}.png"), side_view)
+
     return train_loss/len_data
 
 def reconstruction_test(model, loss_func, loader, epoch, device=torch.device('cpu')):
@@ -204,25 +233,40 @@ def reconstruction_test(model, loss_func, loader, epoch, device=torch.device('cp
             diff = torch.mean(diff, dim=[1])
             loss_pa_mpjpe = torch.mean(diff) * 1000
 
+            # iou
+            pred_segmentation_binary = torch.where(pred["pred_segmentation"] > 0.75, 1, 0).to(torch.int)
+            pred_signature_binary = torch.where(pred["pred_signature"] > 0.75, 1, 0).to(torch.int)
+
+            segmentation_intersection = torch.sum(pred_segmentation_binary & data["segmentation"].reshape(-1, 68).to(torch.int))
+            segmentation_union = torch.sum(pred_segmentation_binary | data["segmentation"].view(-1, 68).to(torch.int))
+            signature_intersection = torch.sum(pred_signature_binary & data["signature"].view(-1, 34 * 34).to(torch.int))
+            signature_union = torch.sum(pred_signature_binary | data["signature"].reshape(-1, 34 * 34).to(torch.int))
+
+            segmentation_iou = segmentation_intersection / segmentation_union
+            signature_iou = signature_intersection / signature_union
+            print(torch.max(pred_segmentation_binary))
+            print('[%d] segmentation_iou: %.4f' % (i + 1, segmentation_iou))
+            print('[%d] signature_iou: %.4f' % (i + 1, signature_iou))
+
             # 可视化
             if False:
-                pred = pred.view(-1, 1, 72).repeat(1, 2, 1)
-                pred[:, 0] = data["pose"].view(-1, 2, 72)[:, 0]
-                pred = pred.view(-1, 72)
-                shape = data["betas"]
-                trans = data["gt_cam_t"]
-                pred_verts, pred_joints = model.model.smpl(shape, pred, trans, halpe=True)
-                pred_verts = pred_verts.view(-1, 2, 6890, 3)
-                pred_verts = torch.cat((pred_verts[:, 0], pred_verts[:, 1]), dim=1)
-                pred_verts = pred_verts.detach().cpu().numpy().astype(np.float32)
-
-                import os
-                output_dir = "output"
+                output_dir = f"output/contact_estimation/{i}"
                 os.makedirs(output_dir, exist_ok=True)
-                for i, verts in enumerate(pred_verts):
-                    output_path = os.path.join(output_dir, f"{i:06d}.txt")
-                    np.savetxt(output_path, verts)
+                for idx in range(batchsize):
+                    img_origin = cv2.imread(data["imgname"][idx])
+                    img = img_origin.copy()
+                    renderer = Renderer(focal_length=data["focal_length"][2 * idx], img_w=img.shape[1], img_h=img.shape[0],
+                                        faces=model.model.smpl.faces,
+                                        same_mesh_color=True)
 
+                    first_verts = data["verts"].view(-1, 2, 6890, 3)[idx:idx+1, 0]
+                    second_verts = pred["pred_vertices"][idx:idx+1]
+                    verts = torch.cat([first_verts, second_verts], dim=0).detach().cpu().numpy()
+
+                    front_view = renderer.render_front_view(verts, bg_img_rgb=img.copy())
+                    side_view = renderer.render_side_view(verts)
+                    cv2.imwrite(os.path.join(output_dir, f"front_view_{idx:06d}.png"), front_view)
+                    cv2.imwrite(os.path.join(output_dir, f"side_view_{idx:06d}.png"), side_view)
             if False: #loss.max() > 100:
                 results = {}
                 results.update(imgs=data['imgname'])
