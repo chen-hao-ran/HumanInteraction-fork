@@ -989,26 +989,69 @@ class Seg_Sig_Loss(nn.Module):
         loss_dict['Sig_Loss'] = sig_loss * self.sig_loss_weight
         return loss_dict
 
-class Seg_Sig_Iou(nn.Module):
+
+class Seg_Iou(nn.Module):
     def __init__(self, device):
-        super(Seg_Sig_Iou, self).__init__()
+        super(Seg_Iou, self).__init__()
         self.device = device
 
-    def forward(self, pred_seg, pred_sig, gt_seg, gt_sig):
+    def forward(self, pred_seg, gt_seg):
         loss_dict = {}
         pred_seg_binary = torch.where(pred_seg > 0.75, 1, 0).to(torch.int)
+
+        total_seg_iou = 0.0
+        valid_frames = 0
+
+        for i in range(pred_seg.shape[0]):
+            if torch.all(gt_seg[i] == 0):
+                continue
+
+            seg_intersection = torch.sum(pred_seg_binary[i] & gt_seg[i].to(torch.int))
+            seg_union = torch.sum(pred_seg_binary[i] | gt_seg[i].to(torch.int))
+
+            if seg_union > 0:
+                seg_iou = seg_intersection / seg_union
+                total_seg_iou += seg_iou
+                valid_frames += 1
+
+        if valid_frames > 0:
+            avg_seg_iou = total_seg_iou / valid_frames
+        else:
+            avg_seg_iou = torch.tensor(torch.nan, device=self.device)
+
+        loss_dict['Seg_Iou'] = avg_seg_iou
+        return loss_dict
+
+class Sig_Iou(nn.Module):
+    def __init__(self, device):
+        super(Sig_Iou, self).__init__()
+        self.device = device
+
+    def forward(self, pred_sig, gt_sig):
+        loss_dict = {}
         pred_sig_binary = torch.where(pred_sig > 0.75, 1, 0).to(torch.int)
 
-        seg_intersection = torch.sum(pred_seg_binary & gt_seg.to(torch.int))
-        seg_union = torch.sum(pred_seg_binary | gt_seg.to(torch.int))
-        sig_intersection = torch.sum(pred_sig_binary & gt_sig.to(torch.int))
-        sig_union = torch.sum(pred_sig_binary | gt_sig.to(torch.int))
+        total_sig_iou = 0.0
+        valid_frames = 0
 
-        seg_iou = seg_intersection / seg_union
-        sig_iou = sig_intersection / sig_union
+        for i in range(pred_sig.shape[0]):
+            if torch.all(gt_sig[i] == 0):
+                continue
 
-        loss_dict['Seg_Iou'] = seg_iou
-        loss_dict['Sig_Iou'] = sig_iou
+            sig_intersection = torch.sum(pred_sig_binary[i] & gt_sig[i].to(torch.int))
+            sig_union = torch.sum(pred_sig_binary[i] | gt_sig[i].to(torch.int))
+
+            if sig_union > 0:
+                sig_iou = sig_intersection / sig_union
+                total_sig_iou += sig_iou
+                valid_frames += 1
+
+        if valid_frames > 0:
+            avg_sig_iou = total_sig_iou / valid_frames
+        else:
+            avg_sig_iou = torch.tensor(torch.nan, device=self.device)
+
+        loss_dict['Sig_Iou'] = avg_sig_iou
         return loss_dict
 
 class Pose_Loss(nn.Module):

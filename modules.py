@@ -140,8 +140,10 @@ class LossLoader():
                 self.test_loss.update(Int_Loss=Int_Loss(self.device))
             if loss == 'Interaction':
                 self.test_loss.update(Interaction=Interaction(self.device))
-            if loss == 'Seg_Sig_Iou':
-                self.test_loss.update(Seg_Sig_Iou=Seg_Sig_Iou(self.device))
+            if loss == 'Seg_Iou':
+                self.test_loss.update(Seg_Iou=Seg_Iou(self.device))
+            if loss == 'Sig_Iou':
+                self.test_loss.update(Sig_Iou=Sig_Iou(self.device))
 
     def calcul_trainloss(self, pred, gt):
         loss_dict = {}
@@ -234,9 +236,12 @@ class LossLoader():
             elif ltype == 'Interaction':
                 Interaction = self.test_loss['Interaction'](pred['pred_joints'], pred['pred_cam_t'], gt['gt_joints'], gt['gt_cam_t'], gt['has_3d'], gt['valid'])
                 loss_dict = {**loss_dict, **Interaction}
-            elif ltype == 'Seg_Sig_Iou':
-                Seg_Sig_Iou = self.test_loss['Seg_Sig_Iou'](pred['pred_segmentation'], pred['pred_signature'], gt['segmentation'].view(-1, 68), gt["signature"].view(-1, 34 * 34))
-                loss_dict = {**loss_dict, **Seg_Sig_Iou}
+            elif ltype == 'Seg_Iou':
+                Seg_Iou = self.test_loss['Seg_Iou'](pred['pred_segmentation'], gt['segmentation'].view(-1, 68))
+                loss_dict = {**loss_dict, **Seg_Iou}
+            elif ltype == 'Sig_Iou':
+                Sig_Iou = self.test_loss['Sig_Iou'](pred['pred_signature'], gt["signature"].view(-1, 34 * 34))
+                loss_dict = {**loss_dict, **Sig_Iou}
             else:
                 print('The specified loss: %s does not exist' %ltype)
                 pass
