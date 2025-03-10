@@ -999,27 +999,19 @@ class Seg_Iou(nn.Module):
         loss_dict = {}
         pred_seg_binary = torch.where(pred_seg > 0.75, 1, 0).to(torch.int)
 
-        total_seg_iou = 0.0
-        valid_frames = 0
+        valid = torch.sum(gt_seg, dim=1) > 0
+        pred_seg_binary = pred_seg_binary[valid]
+        gt_seg = gt_seg[valid]
 
-        for i in range(pred_seg.shape[0]):
-            if torch.all(gt_seg[i] == 0):
-                continue
+        seg_intersection = torch.sum(pred_seg_binary & gt_seg.to(torch.int), dim=1)
+        seg_union = torch.sum(pred_seg_binary | gt_seg.to(torch.int), dim=1)
 
-            seg_intersection = torch.sum(pred_seg_binary[i] & gt_seg[i].to(torch.int))
-            seg_union = torch.sum(pred_seg_binary[i] | gt_seg[i].to(torch.int))
-
-            if seg_union > 0:
-                seg_iou = seg_intersection / seg_union
-                total_seg_iou += seg_iou
-                valid_frames += 1
-
-        if valid_frames > 0:
-            avg_seg_iou = total_seg_iou / valid_frames
+        if len(pred_seg_binary) > 0:
+            seg_iou = torch.mean(seg_intersection / seg_union)
         else:
-            avg_seg_iou = torch.tensor(torch.nan, device=self.device)
+            seg_iou = torch.tensor(torch.nan, device=self.device)
 
-        loss_dict['Seg_Iou'] = avg_seg_iou
+        loss_dict['Seg_Iou'] = seg_iou
         return loss_dict
 
 class Sig_Iou(nn.Module):
@@ -1031,27 +1023,19 @@ class Sig_Iou(nn.Module):
         loss_dict = {}
         pred_sig_binary = torch.where(pred_sig > 0.75, 1, 0).to(torch.int)
 
-        total_sig_iou = 0.0
-        valid_frames = 0
+        valid = torch.sum(gt_sig, dim=1) > 0
+        pred_sig_binary = pred_sig_binary[valid]
+        gt_sig = gt_sig[valid]
 
-        for i in range(pred_sig.shape[0]):
-            if torch.all(gt_sig[i] == 0):
-                continue
+        sig_intersection = torch.sum(pred_sig_binary & gt_sig.to(torch.int), dim=1)
+        sig_union = torch.sum(pred_sig_binary | gt_sig.to(torch.int), dim=1)
 
-            sig_intersection = torch.sum(pred_sig_binary[i] & gt_sig[i].to(torch.int))
-            sig_union = torch.sum(pred_sig_binary[i] | gt_sig[i].to(torch.int))
-
-            if sig_union > 0:
-                sig_iou = sig_intersection / sig_union
-                total_sig_iou += sig_iou
-                valid_frames += 1
-
-        if valid_frames > 0:
-            avg_sig_iou = total_sig_iou / valid_frames
+        if len(pred_sig_binary) > 0:
+            sig_iou = torch.mean(sig_intersection / sig_union)
         else:
-            avg_sig_iou = torch.tensor(torch.nan, device=self.device)
+            sig_iou = torch.tensor(torch.nan, device=self.device)
 
-        loss_dict['Sig_Iou'] = avg_sig_iou
+        loss_dict['Sig_Iou'] = sig_iou
         return loss_dict
 
 class Pose_Loss(nn.Module):
@@ -1069,3 +1053,67 @@ class Pose_Loss(nn.Module):
 
         loss_dict['Pose_Loss'] = loss_regr_pose * self.pose_loss_weight
         return loss_dict
+
+class Noise_Loss(nn.Module):
+    def __init__(self, device):
+        super(Noise_Loss, self).__init__()
+        self.device = device
+
+    def forward(self, pred_noise, target, loss_weight):
+        loss_dict = {}
+
+        loss = torch.sum(F.mse_loss(pred_noise, target, reduction='none'), dim=-1)
+        loss = torch.mean(loss * loss_weight) / 60
+
+        loss_dict['Noise_Loss'] = loss
+        return loss_dict
+
+    def get_named_beta_schedule(self, schedule_name, num_diffusion_timesteps):
+        """
+        Get a pre-defined beta schedule for the given name.
+
+        The beta schedule library consists of beta schedules which remain similar
+        in the limit of num_diffusion_timesteps.
+        Beta schedules may be added, but should not be removed or changed once
+        they are committed to maintain backwards compatibility.
+        """
+        if schedule_name == "linear":
+            # Linear schedule from Ho et al, extended to work for any number of
+            # diffusion steps.
+            scale = 1000 / num_diffusion_timesteps
+            beta_start = scale * 0.0001
+            beta_end = scale * 0.02
+            return np.linspace(
+                beta_start, beta_end, num_diffusion_timesteps, dtype=np.float64
+            )
+        elif schedule_name == "cosine":
+            return self.betas_for_alpha_bar(
+                num_diffusion_timesteps,
+                lambda t: math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2,
+            )
+        else:
+            raise NotImplementedError(f"unknown beta schedule: {schedule_name}")
+
+    def betas_for_alpha_bar(self, num_diffusion_timesteps, alpha_bar, max_beta=0.999):
+        """
+        Create a beta schedule that discretizes the given alpha_t_bar function,
+        which defines the cumulative product of (1-beta) over time from t = [0,1].
+
+        :param num_diffusion_timesteps: the number of betas to produce.
+        :param alpha_bar: a lambda that takes an argument t from 0 to 1 and
+                          produces the cumulative product of (1-beta) up to that
+                          part of the diffusion process.
+        :param max_beta: the maximum beta to use; use values lower than 1 to
+                         prevent singularities.
+        """
+        betas = []
+        for i in range(num_diffusion_timesteps):
+            t1 = i / num_diffusion_timesteps
+            t2 = (i + 1) / num_diffusion_timesteps
+            betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), max_beta))
+        return np.array(betas)
+
+    def extract(self, a, t, x_shape):
+        b, *_ = t.shape
+        out = a.gather(-1, t)
+        return out.reshape(b, *((1,) * (len(x_shape) - 1)))

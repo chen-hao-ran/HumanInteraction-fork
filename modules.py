@@ -106,6 +106,8 @@ class LossLoader():
                 self.train_loss.update(Seg_Sig_Loss=Seg_Sig_Loss(self.device))
             if loss == 'Pose_Loss':
                 self.train_loss.update(Pose_Loss=Pose_Loss(self.device))
+            if loss == 'Noise_Loss':
+                self.train_loss.update(Noise_Loss=Noise_Loss(self.device))
             # You can define your loss function in loss_func.py, e.g., Smooth6D,
             # and load the loss by adding the following lines
 
@@ -189,6 +191,9 @@ class LossLoader():
             elif ltype == 'Pose_Loss':
                 Pose_Loss = self.train_loss['Pose_Loss'](pred['pred_rotmat'], gt['pose'])
                 loss_dict = {**loss_dict, **Pose_Loss}
+            elif ltype == 'Noise_Loss':
+                Noise_Loss = self.train_loss['Noise_Loss'](pred['pred_noise'], pred['target'], pred['loss_weight'])
+                loss_dict = {**loss_dict, **Noise_Loss}
             # elif ltype == 'Smooth6D':
             #     loss_dict.update(Smooth6D=self.train_loss['Smooth6D'](pred_pose))
             else:
